@@ -1,0 +1,143 @@
+Bootstrap: debootstrap
+MirrorURL: http://ubuntu.cs.utah.edu/ubuntu
+OSVersion: bionic
+
+%labels
+
+    APPLICATION_NAME ubuntu + mvapich2
+    APPLICATION_VERSION 18.04 + 2.1
+
+    SYSTEM_NAME comet
+    SYSTEM_SINGULARITY_VERSION 2.6.1
+    SYSTEM_URL http://www.sdsc.edu/support/user_guides/comet.html
+
+    SINGULARITY_IMAGE_SIZE 2048
+
+%setup
+
+%environment
+
+    # Set system locale
+    export LC_ALL=C
+
+%post -c /bin/bash
+
+    # Set system locale
+    export LC_ALL=C
+
+    # Install system metapackages
+    apt -y update
+    apt -y install ubuntu-standard
+    apt -y install ubuntu-server
+
+    # Add repositories
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION} main"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION} universe"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION} multiverse"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION} restricted"
+
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-updates main"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-updates universe"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-updates multiverse"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-updates restricted"
+
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-backports main"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-backports universe"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-backports multiverse"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-backports restricted"
+
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-security main"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-security universe"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-security multiverse"
+    add-apt-repository -y -s "deb ${MIRRORURL} ${OSVERSION}-security restricted"
+
+    # Upgrade all packages to their latest versions
+    apt -y update && apt -y upgrade
+
+    # Install common packages from 'main'
+    apt -y install autoconf automake build-essential cmake libtool pkg-config gfortran zip git wget
+
+    # Install expect to automate responses for interactive build questions
+    apt -y install expect
+
+    # Make filesystem mount points
+    mkdir /cvmfs /oasis /projects /scratch
+
+    # Use /tmp to store temporary files within the container during the
+    # bootstraping process
+    cd /tmp
+
+    # Install miniconda3
+    wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    chmod +x Miniconda3-latest-Linux-x86_64.sh
+    ./Miniconda3-latest-Linux-x86_64.sh -b -p /opt/miniconda3
+
+    # Install basic drivers for user space access to Ethernet, RDMA,
+    # and Infiniband. See https://community.mellanox.com/docs/DOC-2431
+    apt -y install dkms infiniband-diags libibverbs-dev ibacm librdmacm-dev libmlx4-dev libmlx5-dev mstflint libibcm-dev libibmad-dev libibumad-dev opensm srptools
+
+    # Install additional tools
+    apt -y install ibutils ibverbs-utils rdmacm-utils perftest numactl libnuma-dev
+
+    # Install libnl
+    apt -y install libnl-3-200 libnl-route-3-200 libnl-route-3-dev libnl-utils
+
+    # Install mvapich2 (build) dependencies
+    apt -y install bison
+
+    # Download, build, and install mvapich2
+    wget http://mvapich.cse.ohio-state.edu/download/mvapich/mv2/mvapich2-2.1.tar.gz
+    tar -xzvf mvapich2-2.1.tar.gz
+    cd mvapich2-2.1
+    ./configure --prefix=/opt/mvapich2
+    make
+    make install
+
+    # Install llvm and clang
+    echo "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-8 main" >> /etc/apt/sources.list.d/llvm.list
+	echo "deb-src http://apt.llvm.org/bionic/ llvm-toolchain-bionic-8 main" >> /etc/apt/sources.list.d/llvm.list
+	wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+	apt update
+	apt -y install libllvm-8-ocaml-dev libllvm8 llvm-8 llvm-8-dev llvm-8-runtime
+	apt -y install clang-8 clang-tools-8 libclang-common-8-dev libclang-8-dev libclang1-8 clang-format-8 python-clang-8
+	
+	# Install additional depencies for pocl
+	apt -y install zlib1g-dev libtinfo-dev libltdl3-dev hwloc libhwloc-dev
+
+    # Install pyopencl
+    apt -y install ocl-icd-dev ocl-icd-libopencl1 ocl-icd-opencl-dev
+
+    # Build Pocl
+    cd /projects/
+    git clone https://github.com/pocl/pocl.git && cd pocl
+    mkdir build && cd build
+    POCL_PREFIX=/opt/miniconda3/
+    cmake -D CMAKE_BUILD_TYPE="Debug" -D CMAKE_INSTALL_PREFIX="${POCL_PREFIX}" -D CMAKE_PREFIX_PATH="${POCL_PREFIX}" -D POCL_INSTALL_ICD_VENDORDIR="${POCL_PREFIX}/etc/OpenCL/vendors" -D INSTALL_OPENCL_HEADERS="off" -D ENABLE_ICD=on -DWITH_LLVM_CONFIG=llvm-config-8 ..
+    make -j4
+    make install
+    make check
+
+    # Configure pyopencl
+    conda config --add channels conda-forge
+    conda install -y pyopencl
+    cp /etc/OpenCL/vendors/pocl.icd /opt/miniconda3/etc/OpenCL/vendors/
+
+    # Set container environment variables
+    cd /.singularity.d/env
+    echo 'export PATH="/opt/mvapich2/bin:${PATH}"' >> 90-environment.sh
+    echo 'export LD_LIBRARY_PATH="/opt/mvapich2/lib:${LD_LIBRARY_PATH}"' >> 90-environment.sh
+    echo 'export PATH="/opt/miniconda3/bin:${PATH}"' >> 90-environment.sh
+
+    # Update database for mlocate
+    updatedb
+
+%files
+
+%runscript
+
+%test
+
+    #export PATH="/opt/mvapich2/bin:${PATH}"
+    #export LD_LIBRARY_PATH="/opt/mvapich2/lib:${LD_LIBRARY_PATH}"
+    #mpirun --version
+
